@@ -165,6 +165,84 @@ def create_driver():
     return driver
 
 
+def is_actually_logged_in(driver):
+    """
+    Verify if user is ACTUALLY logged in to Google by checking for
+    authenticated-only elements on business.google.com.
+    URL check alone is NOT reliable — GMB can show business.google.com
+    even without login (landing page, embedded sign-in form, etc.)
+    """
+    import time
+
+    # Check 1: If URL contains accounts.google.com → definitely NOT logged in
+    if "accounts.google.com" in driver.current_url:
+        logger.info("  URL contains accounts.google.com → NOT logged in")
+        return False
+
+    # Check 2: If URL is not on business.google.com at all → NOT logged in
+    if "business.google.com" not in driver.current_url:
+        logger.info(f"  URL is not business.google.com → NOT logged in (URL: {driver.current_url})")
+        return False
+
+    # Check 3: Look for elements that ONLY appear when authenticated
+    # These are GMB dashboard elements that require a logged-in session
+    authenticated_selectors = [
+        # Search combobox (only visible on authenticated GMB dashboard)
+        "//input[@role='combobox']",
+        # User avatar / account icon in top-right
+        "//a[contains(@href, 'accounts.google.com/SignOutOptions')]",
+        "//img[contains(@class, 'avatar') or contains(@class, 'profile')]",
+        # Business listing elements
+        "//div[contains(@class, 'business-name')]",
+        # GMB navigation items only visible when logged in
+        "//*[@data-business-id]",
+    ]
+
+    for selector in authenticated_selectors:
+        try:
+            elements = driver.find_elements(By.XPATH, selector)
+            visible_elements = [e for e in elements if e.is_displayed()]
+            if visible_elements:
+                logger.info(f"  Found authenticated element: {selector} → LOGGED IN")
+                return True
+        except Exception:
+            continue
+
+    # Check 4: Look for sign-in / login buttons (indicates NOT logged in)
+    not_logged_in_indicators = [
+        "//a[contains(@href, 'accounts.google.com/ServiceLogin')]",
+        "//*[contains(text(), 'Sign in')]",
+        "//*[contains(text(), 'Masuk')]",
+        "//*[contains(text(), 'Login')]",
+    ]
+
+    for selector in not_logged_in_indicators:
+        try:
+            elements = driver.find_elements(By.XPATH, selector)
+            visible_elements = [e for e in elements if e.is_displayed()]
+            if visible_elements:
+                logger.info(f"  Found sign-in indicator: {selector} → NOT logged in")
+                return False
+        except Exception:
+            continue
+
+    # Check 5: Try to find the search bar by waiting briefly
+    try:
+        from selenium.common.exceptions import TimeoutException
+        search_bar = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.XPATH, "//input[@role='combobox']"))
+        )
+        if search_bar.is_displayed():
+            logger.info("  Search combobox found and visible → LOGGED IN")
+            return True
+    except Exception:
+        pass
+
+    # If none of the checks matched, assume NOT logged in
+    logger.info("  No authenticated elements found → NOT logged in")
+    return False
+
+
 def login_to_google(driver):
     """
     Check if already logged in. If not, open login page and wait for user to complete login.
@@ -180,15 +258,15 @@ def login_to_google(driver):
         # Check if already logged in by navigating to GMB
         logger.info("Checking if already authenticated...")
         driver.get(GMB_URL)
-        time.sleep(3)
+        time.sleep(5)  # Wait longer for page to fully load/redirect
 
-        # If we're at GMB without redirect to login, user is authenticated
-        if "business.google.com" in driver.current_url and "accounts.google.com" not in driver.current_url:
+        # Verify ACTUAL login status (not just URL)
+        if is_actually_logged_in(driver):
             logger.info("[OK] Already logged in! Using saved session.")
             logger.info("=" * 70)
             return True
 
-        # If redirected to login, need to authenticate
+        # Not logged in — prompt user to log in
         logger.info("Not authenticated. Opening login page...")
         logger.info("=" * 70)
         logger.info("GOOGLE LOGIN REQUIRED")
@@ -197,25 +275,30 @@ def login_to_google(driver):
         logger.info("After logging in, press Enter in this terminal to continue.")
         logger.info("=" * 70)
 
-        # Already at login page, wait for user
+        # If not already at Google login page, navigate there
+        if "accounts.google.com" not in driver.current_url:
+            driver.get("https://accounts.google.com/ServiceLogin?continue=https://business.google.com/")
+            time.sleep(3)
+
         logger.info("Chrome browser is open. Please log in now.")
 
         # Wait for user to press Enter
         input("\nPress Enter after you have successfully logged in: ")
 
         logger.info("Continuing with automation...")
-        time.sleep(2)
-
-        # Verify login was successful
-        driver.get(GMB_URL)
         time.sleep(3)
 
-        if "business.google.com" in driver.current_url:
+        # Verify login was successful — navigate to GMB and check properly
+        driver.get(GMB_URL)
+        time.sleep(5)
+
+        if is_actually_logged_in(driver):
             logger.info("[OK] Login successful! Session will be saved for next use.")
             logger.info("=" * 70)
             return True
         else:
-            logger.error("[FAIL] Login verification failed")
+            logger.error("[FAIL] Login verification failed. Please make sure you are logged in to Google.")
+            logger.error("Try running the script again after logging in manually.")
             return False
 
     except Exception as e:
