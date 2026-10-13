@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # GMB Automation
 
 Automate Google Business Profile post creation via Selenium. Reads store codes from plain text file, creates posts with static description/photo and unique URLs per store.
@@ -311,3 +312,6 @@ py -m pip install -r requirements.txt
 Copy-Item -Path ".env.example" -Destination ".env"
 py gmb_automation.py
 ```
+=======
+# gmb-automation
+>>>>>>> f9ba699265d41a542838ee8fa304ca50c22592cb
