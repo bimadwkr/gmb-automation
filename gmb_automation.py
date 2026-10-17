@@ -70,8 +70,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
-        logging.FileHandler(LOG_DIR / "gmb_automation.log"),
-        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(LOG_DIR / "gmb_automation.log", encoding="utf-8"),
+        logging.StreamHandler(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)),
     ],
 )
 logger = logging.getLogger(__name__)
@@ -165,6 +165,10 @@ def create_driver():
     options.add_argument("--no-default-browser-check")
     options.add_argument("--no-first-run")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
 
@@ -175,6 +179,84 @@ def create_driver():
 
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => false})")
     return driver
+
+
+def is_actually_logged_in(driver):
+    """
+    Verify if user is ACTUALLY logged in to Google by checking for
+    authenticated-only elements on business.google.com.
+    URL check alone is NOT reliable — GMB can show business.google.com
+    even without login (landing page, embedded sign-in form, etc.)
+    """
+    import time
+
+    # Check 1: If URL contains accounts.google.com → definitely NOT logged in
+    if "accounts.google.com" in driver.current_url:
+        logger.info("  URL contains accounts.google.com → NOT logged in")
+        return False
+
+    # Check 2: If URL is not on business.google.com at all → NOT logged in
+    if "business.google.com" not in driver.current_url:
+        logger.info(f"  URL is not business.google.com → NOT logged in (URL: {driver.current_url})")
+        return False
+
+    # Check 3: Look for elements that ONLY appear when authenticated
+    # These are GMB dashboard elements that require a logged-in session
+    authenticated_selectors = [
+        # Search combobox (only visible on authenticated GMB dashboard)
+        "//input[@role='combobox']",
+        # User avatar / account icon in top-right
+        "//a[contains(@href, 'accounts.google.com/SignOutOptions')]",
+        "//img[contains(@class, 'avatar') or contains(@class, 'profile')]",
+        # Business listing elements
+        "//div[contains(@class, 'business-name')]",
+        # GMB navigation items only visible when logged in
+        "//*[@data-business-id]",
+    ]
+
+    for selector in authenticated_selectors:
+        try:
+            elements = driver.find_elements(By.XPATH, selector)
+            visible_elements = [e for e in elements if e.is_displayed()]
+            if visible_elements:
+                logger.info(f"  Found authenticated element: {selector} → LOGGED IN")
+                return True
+        except Exception:
+            continue
+
+    # Check 4: Look for sign-in / login buttons (indicates NOT logged in)
+    not_logged_in_indicators = [
+        "//a[contains(@href, 'accounts.google.com/ServiceLogin')]",
+        "//*[contains(text(), 'Sign in')]",
+        "//*[contains(text(), 'Masuk')]",
+        "//*[contains(text(), 'Login')]",
+    ]
+
+    for selector in not_logged_in_indicators:
+        try:
+            elements = driver.find_elements(By.XPATH, selector)
+            visible_elements = [e for e in elements if e.is_displayed()]
+            if visible_elements:
+                logger.info(f"  Found sign-in indicator: {selector} → NOT logged in")
+                return False
+        except Exception:
+            continue
+
+    # Check 5: Try to find the search bar by waiting briefly
+    try:
+        from selenium.common.exceptions import TimeoutException
+        search_bar = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.XPATH, "//input[@role='combobox']"))
+        )
+        if search_bar.is_displayed():
+            logger.info("  Search combobox found and visible → LOGGED IN")
+            return True
+    except Exception:
+        pass
+
+    # If none of the checks matched, assume NOT logged in
+    logger.info("  No authenticated elements found → NOT logged in")
+    return False
 
 
 def login_to_google(driver):
@@ -192,15 +274,15 @@ def login_to_google(driver):
         # Check if already logged in by navigating to GMB
         logger.info("Checking if already authenticated...")
         driver.get(GMB_URL)
-        sleep_opt(1.5)
+        time.sleep(3)
 
-        # If we're at GMB without redirect to login, user is authenticated
-        if "business.google.com" in driver.current_url and "accounts.google.com" not in driver.current_url:
+        # Verify ACTUAL login status (not just URL)
+        if is_actually_logged_in(driver):
             logger.info("[OK] Already logged in! Using saved session.")
             logger.info("=" * 70)
             return True
 
-        # If redirected to login, need to authenticate
+        # Not logged in — prompt user to log in
         logger.info("Not authenticated. Opening login page...")
         logger.info("=" * 70)
         logger.info("GOOGLE LOGIN REQUIRED")
@@ -209,25 +291,30 @@ def login_to_google(driver):
         logger.info("After logging in, press Enter in this terminal to continue.")
         logger.info("=" * 70)
 
-        # Already at login page, wait for user
+        # If not already at Google login page, navigate there
+        if "accounts.google.com" not in driver.current_url:
+            driver.get("https://accounts.google.com/ServiceLogin?continue=https://business.google.com/")
+            time.sleep(3)
+
         logger.info("Chrome browser is open. Please log in now.")
 
         # Wait for user to press Enter
         input("\nPress Enter after you have successfully logged in: ")
 
         logger.info("Continuing with automation...")
-        sleep_opt(1)
+        time.sleep(2)
 
-        # Verify login was successful
+        # Verify login was successful — navigate to GMB and check properly
         driver.get(GMB_URL)
-        sleep_opt(1.5)
+        time.sleep(3)
 
-        if "business.google.com" in driver.current_url:
+        if is_actually_logged_in(driver):
             logger.info("[OK] Login successful! Session will be saved for next use.")
             logger.info("=" * 70)
             return True
         else:
-            logger.error("[FAIL] Login verification failed")
+            logger.error("[FAIL] Login verification failed. Please make sure you are logged in to Google.")
+            logger.error("Try running the script again after logging in manually.")
             return False
 
     except Exception as e:
@@ -309,21 +396,57 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
         logger.info("Description filled")
         sleep_opt(0.5)
 
-        # Upload photo
+        # IMPORTANT: Switch back to main content after filling description in iframe
+        logger.info("Switching back to main content...")
+        driver.switch_to.default_content()
+        time.sleep(1)
+
+        # Upload photo - search across main content and all iframes
         logger.info("Uploading photo...")
         file_input = None
+
+        # Try main content first
         try:
-            file_input = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.XPATH, "//input[@type='file']"))
-            )
-            logger.info("File input found")
-        except Exception as e:
-            logger.error(f"File input not found: {e}")
+            file_inputs = driver.find_elements(By.XPATH, "//input[@type='file']")
+            if file_inputs:
+                file_input = file_inputs[0]
+                logger.info("File input found in main content")
+        except:
+            pass
+
+        # If not found, search in iframes
+        if not file_input:
+            iframes = driver.find_elements(By.XPATH, "//iframe")
+            for i, iframe in enumerate(iframes):
+                try:
+                    driver.switch_to.frame(iframe)
+                    file_inputs = driver.find_elements(By.XPATH, "//input[@type='file']")
+                    if file_inputs:
+                        file_input = file_inputs[0]
+                        logger.info(f"File input found in iframe {i}")
+                        break
+                    driver.switch_to.default_content()
+                except:
+                    try:
+                        driver.switch_to.default_content()
+                    except:
+                        pass
+
+        if not file_input:
+            # Try waiting
+            driver.switch_to.default_content()
             try:
-                driver.save_screenshot(str(SCREENSHOT_DIR / f"{profile_name}_no_file_input.png"))
-            except:
-                pass
-            return False
+                file_input = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//input[@type='file']"))
+                )
+                logger.info("File input found after wait")
+            except Exception as e:
+                logger.error(f"File input not found: {e}")
+                try:
+                    driver.save_screenshot(str(SCREENSHOT_DIR / f"{profile_name}_no_file_input.png"))
+                except:
+                    pass
+                return False
 
         photo_path = Path(PHOTO)
         if not photo_path.is_absolute():
@@ -335,7 +458,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
         file_input.send_keys(str(photo_path.absolute()))
         logger.info(f"Photo uploaded: {PHOTO}")
-        sleep_opt(1.5)
+        time.sleep(3)
 
         # Select CTA
         logger.info(f"Selecting CTA: {CTA}")
@@ -343,40 +466,112 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
         cta_found = False
 
+        # Helper: find and log all visible buttons
+        def find_all_buttons():
+            btns = driver.find_elements(By.XPATH, "//button | //div[@role='button'] | //span[@role='button'] | //a[@role='button']")
+            logger.info(f"Found {len(btns)} buttons on page")
+            for i, b in enumerate(btns):
+                try:
+                    t = (b.text or b.get_attribute('aria-label') or '').strip()
+                    if t and b.is_displayed():
+                        logger.info(f"  CTA scan [{i}]: '{t[:60]}'")
+                except:
+                    pass
+            return btns
+
+        # Also search in iframes for CTA elements
+        def search_in_all_contexts(search_func):
+            """Run search_func in main content and all iframes until it returns True"""
+            driver.switch_to.default_content()
+            if search_func():
+                return True
+            iframes = driver.find_elements(By.XPATH, "//iframe")
+            for i, iframe in enumerate(iframes):
+                try:
+                    driver.switch_to.frame(iframe)
+                    if search_func():
+                        return True
+                    driver.switch_to.default_content()
+                except:
+                    try:
+                        driver.switch_to.default_content()
+                    except:
+                        pass
+            return False
+
         try:
-            # Find +Tombol button
+            # Find +Tombol / +Button / Add a button
             tombol_btn = None
-            buttons = driver.find_elements(By.XPATH, "//button | //div[@role='button']")
-            logger.info(f"Found {len(buttons)} buttons on page")
+            buttons = find_all_buttons()
+
+            # Search keywords for the CTA button trigger
+            cta_trigger_keywords = ['tombol', 'button', 'add a button', 'tambah tombol']
 
             for btn in buttons:
                 try:
-                    btn_text = btn.text or btn.get_attribute('aria-label') or ""
-                    if 'Tombol' in btn_text or ('+' in btn_text and btn.is_displayed()):
-                        tombol_btn = btn
-                        logger.info(f"Found +Tombol button")
+                    btn_text = (btn.text or btn.get_attribute('aria-label') or "").strip()
+                    btn_text_lower = btn_text.lower()
+
+                    for keyword in cta_trigger_keywords:
+                        if keyword in btn_text_lower:
+                            if btn.is_displayed():
+                                tombol_btn = btn
+                                logger.info(f"Found CTA trigger button: '{btn_text}'")
+                                break
+                    if tombol_btn:
                         break
                 except:
                     continue
+
+            # If not found in main, try iframes
+            if not tombol_btn:
+                logger.info("CTA trigger not found in main content, checking iframes...")
+                iframes = driver.find_elements(By.XPATH, "//iframe")
+                for i, iframe in enumerate(iframes):
+                    try:
+                        driver.switch_to.frame(iframe)
+                        buttons = driver.find_elements(By.XPATH, "//button | //div[@role='button'] | //span[@role='button']")
+                        for btn in buttons:
+                            try:
+                                btn_text = (btn.text or btn.get_attribute('aria-label') or "").strip()
+                                btn_text_lower = btn_text.lower()
+                                for keyword in cta_trigger_keywords:
+                                    if keyword in btn_text_lower:
+                                        if btn.is_displayed():
+                                            tombol_btn = btn
+                                            logger.info(f"Found CTA trigger in iframe {i}: '{btn_text}'")
+                                            break
+                                if tombol_btn:
+                                    break
+                            except:
+                                continue
+                        if tombol_btn:
+                            break
+                        driver.switch_to.default_content()
+                    except:
+                        try:
+                            driver.switch_to.default_content()
+                        except:
+                            pass
 
             if tombol_btn:
                 driver.execute_script("arguments[0].scrollIntoView(true);", tombol_btn)
                 sleep_opt(0.3)
                 driver.execute_script("arguments[0].click();", tombol_btn)
                 logger.info("Clicked +Tombol button")
-                sleep_opt(1)
+                time.sleep(2)
 
-                # Find and click CTA combobox (Tidak ada)
+                # Find and click CTA combobox (Tidak ada / None)
                 logger.info("Looking for CTA combobox...")
                 try:
                     cta_combos = driver.find_elements(By.XPATH, "//*[contains(text(),'Tidak ada')]")
                     for combo in cta_combos:
                         if combo.is_displayed():
                             driver.execute_script("arguments[0].scrollIntoView(true);", combo)
-                            sleep_opt(0.2)
+                            time.sleep(0.3)
                             driver.execute_script("arguments[0].click();", combo)
                             logger.info("Clicked CTA combobox")
-                            sleep_opt(1)
+                            time.sleep(2)
                             break
                 except Exception as e:
                     logger.debug(f"CTA combobox click failed: {e}")
@@ -389,6 +584,9 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                     try:
                         logger.info(f"  Searching for: '{cand}'")
                         opts = driver.find_elements(By.XPATH, f"//*[normalize-space(.)='{cand}'][@role='option' or @role='menuitem'] | //*[normalize-space(.)='{cand}'][contains(@class, 'option')]")
+                        if not opts:
+                            # Broader search
+                            opts = driver.find_elements(By.XPATH, f"//*[normalize-space(.)='{cand}']")
                         for opt in opts:
                             try:
                                 if opt.is_displayed():
@@ -407,7 +605,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                         logger.debug(f"CTA search failed: {e}")
 
             else:
-                logger.warning("+Tombol button not found")
+                logger.warning("CTA trigger button not found in main content or iframes")
 
         except Exception as e:
             logger.warning(f"CTA selection failed: {e}")
@@ -417,43 +615,73 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
         sleep_opt(0.5)
 
-        # Fill WA link
+        # IMPORTANT: Switch back to main content before searching for URL field
+        driver.switch_to.default_content()
+        time.sleep(1)
+
+        # Fill WA link - search in main content and all iframes
         logger.info("Filling WA link...")
         sleep_opt(1)
 
         url_field = None
-        all_inputs = driver.find_elements(By.XPATH, "//input[@type='text' or @type='url']")
-        logger.info(f"Found {len(all_inputs)} text inputs on page")
 
-        for inp in all_inputs:
-            try:
-                if not inp.is_displayed():
-                    continue
+        def find_url_field_in_current_context():
+            """Find URL/link input field in the current context (main or iframe)"""
+            nonlocal url_field
+            all_inputs = driver.find_elements(By.XPATH, "//input[@type='text' or @type='url' or not(@type)]")
+            logger.info(f"Found {len(all_inputs)} inputs in current context")
 
-                inp_placeholder = inp.get_attribute('placeholder') or ""
-                inp_value = inp.get_attribute('value') or ""
-                inp_aria = inp.get_attribute('aria-label') or ""
-
-                logger.info(f"  Input: placeholder='{inp_placeholder}', aria='{inp_aria}'")
-
-                # Check for link-related field
-                if any(x in inp_placeholder.lower() or x in inp_aria.lower() for x in ['link', 'url', 'whatsapp']):
-                    url_field = inp
-                    logger.info("Found URL field by label")
-                    break
-            except:
-                continue
-
-        # If not found, use first empty text input
-        if not url_field:
             for inp in all_inputs:
                 try:
-                    if inp.is_displayed() and inp.get_attribute('value') == "":
+                    if not inp.is_displayed():
+                        continue
+                    inp_placeholder = inp.get_attribute('placeholder') or ""
+                    inp_aria = inp.get_attribute('aria-label') or ""
+                    inp_name = inp.get_attribute('name') or ""
+                    inp_id = inp.get_attribute('id') or ""
+
+                    logger.info(f"  Input: placeholder='{inp_placeholder}', aria='{inp_aria}', name='{inp_name}', id='{inp_id}'")
+
+                    # Check for link-related field
+                    all_attrs = (inp_placeholder + inp_aria + inp_name + inp_id).lower()
+                    if any(x in all_attrs for x in ['link', 'url', 'whatsapp', 'http', 'website', 'tautan']):
                         url_field = inp
-                        logger.info("Using first empty text input as URL field")
-                        break
+                        logger.info("Found URL field by label")
+                        return True
                 except:
                     continue
+
+            # Fallback: first visible empty text input (not the search bar)
+            for inp in all_inputs:
+                try:
+                    if inp.is_displayed() and (inp.get_attribute('value') or "") == "":
+                        inp_role = inp.get_attribute('role') or ""
+                        if inp_role != 'combobox':  # skip search bar
+                            url_field = inp
+                            logger.info("Using first empty text input as URL field (fallback)")
+                            return True
+                except:
+                    continue
+            return False
+
+        # Search main content first
+        if not find_url_field_in_current_context():
+            # Search in iframes
+            logger.info("URL field not found in main content, checking iframes...")
+            iframes = driver.find_elements(By.XPATH, "//iframe")
+            for i, iframe in enumerate(iframes):
+                try:
+                    driver.switch_to.frame(iframe)
+                    logger.info(f"Checking iframe {i} for URL field...")
+                    if find_url_field_in_current_context():
+                        logger.info(f"Found URL field in iframe {i}")
+                        break
+                    driver.switch_to.default_content()
+                except:
+                    try:
+                        driver.switch_to.default_content()
+                    except:
+                        pass
 
         if url_field:
             try:
@@ -466,8 +694,19 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                 logger.error(f"Failed to fill URL: {e}")
                 return False
         else:
-            logger.warning("URL field not found")
+            logger.warning("URL field not found in any context")
+            try:
+                driver.switch_to.default_content()
+                driver.save_screenshot(str(SCREENSHOT_DIR / f"{profile_name}_url_field_not_found.png"))
+            except:
+                pass
             return False
+
+        # Switch back to main content before publishing
+        try:
+            driver.switch_to.default_content()
+        except:
+            pass
 
         # Publish
         if not DRY_RUN:
@@ -475,37 +714,44 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
             sleep_opt(1)
 
             try:
-                # Extended list of xpaths to find publish button
-                xpaths = [
+                publish_btn = None
+
+                # Publish button xpaths - exact matches first to avoid false positives
+                publish_xpaths = [
+                    "//button[normalize-space(.)='Post']",
                     "//button[normalize-space(.)='Pos']",
-                    "//button[contains(., 'Pos')]",
-                    "//button[@aria-label='Pos']",
-                    "//button[contains(., 'Publish')]",
                     "//button[normalize-space(.)='Publish']",
+                    "//button[normalize-space(.)='Kirim']",
+                    "//button[normalize-space(.)='Submit']",
+                    "//button[@aria-label='Post']",
+                    "//button[@aria-label='Pos']",
+                    "//button[@aria-label='Publish']",
+                    "//div[@role='button'][normalize-space(.)='Post']",
                     "//div[@role='button'][normalize-space(.)='Pos']",
-                    "//div[@role='button'][contains(., 'Pos')]",
-                    "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'pos')]",
+                    "//div[@role='button'][normalize-space(.)='Publish']",
+                    "//*[@role='button'][normalize-space(.)='Post']",
                     "//*[@role='button'][normalize-space(.)='Pos']",
                 ]
 
-                publish_btn = None
-                for xp in xpaths:
-                    try:
-                        logger.info(f"  Trying xpath: {xp[:50]}...")
-                        btn = WebDriverWait(driver, 3).until(
-                            EC.presence_of_element_located((By.XPATH, xp))
-                        )
-                        if btn and btn.is_displayed():
-                            logger.info(f"Found publish button with: {xp}")
-                            publish_btn = btn
-                            break
-                    except:
-                        continue
+                def search_publish_in_context(context_name):
+                    """Search for publish button in current context"""
+                    nonlocal publish_btn
+                    for xp in publish_xpaths:
+                        try:
+                            btns = driver.find_elements(By.XPATH, xp)
+                            for btn in btns:
+                                if btn.is_displayed():
+                                    btn_text = (btn.text or btn.get_attribute('aria-label') or '').strip()
+                                    logger.info(f"Found publish button in {context_name}: '{btn_text}' with xpath: {xp}")
+                                    publish_btn = btn
+                                    return True
+                        except:
+                            continue
 
                 # If still not found, search by button containing common action keywords
                 if not publish_btn:
                     logger.warning("Standard xpaths failed. Full page button scan...")
-                    sleep_opt(0.5)
+                    time.sleep(1)
 
                     # Save screenshot before scanning
                     try:
@@ -521,30 +767,48 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
                     for idx, btn in enumerate(all_buttons):
                         try:
-                            btn_text = (btn.text or btn.get_attribute('innerText') or btn.get_attribute('aria-label') or btn.get_attribute('value') or "").strip()
-                            btn_class = btn.get_attribute('class') or ""
-                            btn_id = btn.get_attribute('id') or ""
-                            is_displayed = btn.is_displayed()
+                            btn_text = (btn.text or btn.get_attribute('innerText') or btn.get_attribute('aria-label') or '').strip()
+                            btn_text_lower = btn_text.lower()
 
-                            # Log every button
-                            logger.info(f"  [{idx}] '{btn_text[:40]}' | id: {btn_id[:20]} | class: {btn_class[:30]} | visible: {is_displayed}")
+                            # Skip "Create post" and navigation buttons
+                            if any(skip in btn_text_lower for skip in ['create', 'buat', 'menu', 'search', 'google', 'close', 'back', 'cancel', 'batal']):
+                                continue
 
-                            # Look for publish/post/submit keywords
-                            if any(keyword in btn_text.lower() for keyword in ['pos', 'publish', 'post', 'submit', 'kirim', 'simpan']):
-                                if is_displayed:
-                                    logger.info(f"✓ Found match at index {idx}: '{btn_text}'")
+                            # Match publish/post/submit keywords
+                            if any(kw == btn_text_lower for kw in ['post', 'pos', 'publish', 'kirim', 'submit', 'simpan']):
+                                if btn.is_displayed():
+                                    logger.info(f"Found publish button via scan in {context_name}: '{btn_text}'")
                                     publish_btn = btn
-                                    break
-                        except Exception as e:
-                            logger.debug(f"Button {idx} error: {e}")
+                                    return True
+                        except:
                             continue
+                    return False
+
+                # Step 1: Search in main content
+                logger.info("Searching for publish button in main content...")
+                if not search_publish_in_context("main content"):
+                    # Step 2: Search in ALL iframes
+                    logger.info("Publish button not in main content, checking iframes...")
+                    iframes = driver.find_elements(By.XPATH, "//iframe")
+                    for i, iframe in enumerate(iframes):
+                        try:
+                            driver.switch_to.frame(iframe)
+                            logger.info(f"Checking iframe {i} for publish button...")
+                            if search_publish_in_context(f"iframe {i}"):
+                                logger.info(f"Publish button found in iframe {i}")
+                                break
+                            driver.switch_to.default_content()
+                        except:
+                            try:
+                                driver.switch_to.default_content()
+                            except:
+                                pass
 
                 if not publish_btn:
-                    logger.error("❌ Publish button NOT FOUND after full scan")
+                    logger.error("Publish button NOT FOUND in any context")
                     try:
-                        screenshot_path = str(SCREENSHOT_DIR / f"{profile_name}_publish_button_not_found.png")
-                        driver.save_screenshot(screenshot_path)
-                        logger.error(f"Debug screenshot: {screenshot_path}")
+                        driver.switch_to.default_content()
+                        driver.save_screenshot(str(SCREENSHOT_DIR / f"{profile_name}_publish_button_not_found.png"))
                     except:
                         pass
                     return False
@@ -563,11 +827,19 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                 sleep_opt(1.5)
 
                 logger.info(f"Post published successfully for: {profile_name}")
+
+                # Switch back to main content
+                try:
+                    driver.switch_to.default_content()
+                except:
+                    pass
+
                 return True
 
             except Exception as e:
                 logger.error(f"Publish failed: {e}")
                 try:
+                    driver.switch_to.default_content()
                     driver.save_screenshot(str(SCREENSHOT_DIR / f"{profile_name}_publish_error.png"))
                 except:
                     pass
@@ -620,25 +892,69 @@ def process_store(driver, store_code: str, wa_link: str):
         # Step 4: Find ALL add post buttons (all profiles for this store)
         logger.info("Looking for all add post buttons (profiles)...")
 
-        # Find all candidate buttons
-        all_btns = driver.find_elements(By.XPATH, "//button | //div[@role='button']")
-        logger.info(f"Total buttons found: {len(all_btns)}")
+        # Wait for page to fully load after search
+        time.sleep(5)
 
+        # Try multiple times with increasing wait
         add_post_buttons = []
-        for btn in all_btns:
-            try:
-                btn_text = btn.get_attribute('innerText') or btn.get_attribute('aria-label') or btn.get_attribute('title') or ''
-                btn_text_lower = btn_text.lower()
+        for attempt in range(3):
+            all_btns = driver.find_elements(By.XPATH, "//button | //div[@role='button'] | //a[@role='button'] | //span[@role='button']")
+            logger.info(f"Attempt {attempt + 1}: Total buttons found: {len(all_btns)}")
 
-                if 'postingan' in btn_text_lower or ('post' in btn_text_lower and 'buat' in btn_text_lower) or 'add post' in btn_text_lower:
-                    if btn.is_displayed():
-                        add_post_buttons.append(btn)
-                        logger.info(f"Found profile button [{len(add_post_buttons)}]: {btn_text[:50]}")
-            except:
-                continue
+            # Log all button texts for debugging
+            if attempt == 0:
+                for i, btn in enumerate(all_btns):
+                    try:
+                        btn_text = (btn.get_attribute('innerText') or btn.get_attribute('aria-label') or btn.get_attribute('title') or '').strip()
+                        if btn_text and btn.is_displayed():
+                            logger.info(f"  Button [{i}]: '{btn_text[:60]}'")
+                    except:
+                        continue
+
+            for btn in all_btns:
+                try:
+                    btn_text = btn.get_attribute('innerText') or btn.get_attribute('aria-label') or btn.get_attribute('title') or ''
+                    btn_text_lower = btn_text.lower().strip()
+
+                    # Expanded matching: postingan, add post, buat post, create post, tambah postingan, + Postingan
+                    match = False
+                    if 'postingan' in btn_text_lower:
+                        match = True
+                    elif 'add post' in btn_text_lower:
+                        match = True
+                    elif 'post' in btn_text_lower and 'buat' in btn_text_lower:
+                        match = True
+                    elif 'create post' in btn_text_lower:
+                        match = True
+                    elif 'tambah' in btn_text_lower and 'post' in btn_text_lower:
+                        match = True
+                    elif 'add update' in btn_text_lower:
+                        match = True
+                    elif 'buat' in btn_text_lower and 'update' in btn_text_lower:
+                        match = True
+
+                    if match and btn.is_displayed():
+                        # Avoid duplicates
+                        if btn not in add_post_buttons:
+                            add_post_buttons.append(btn)
+                            logger.info(f"Found profile button [{len(add_post_buttons)}]: {btn_text[:50]}")
+                except:
+                    continue
+
+            if add_post_buttons:
+                break
+
+            # Wait and retry
+            logger.info(f"No buttons found yet, waiting... (attempt {attempt + 1}/3)")
+            time.sleep(3)
 
         if not add_post_buttons:
-            logger.error("No add post buttons found")
+            logger.error("No add post buttons found after 3 attempts")
+            try:
+                driver.save_screenshot(str(SCREENSHOT_DIR / f"{store_code}_no_add_post_buttons.png"))
+                logger.info(f"Debug screenshot saved: {store_code}_no_add_post_buttons.png")
+            except:
+                pass
             raise Exception("No profiles found for store code")
 
         logger.info(f"Found {len(add_post_buttons)} profiles to post to")
