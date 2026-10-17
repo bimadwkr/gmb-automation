@@ -42,6 +42,9 @@ CHROME_PROFILE = os.getenv("CHROME_PROFILE", "./chrome-profile")
 GMB_URL = os.getenv("GMB_URL", "https://business.google.com/")
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 MAX_STORES = int(os.getenv("MAX_STORES", "1"))
+FAST_MODE = os.getenv("FAST_MODE", "false").lower() == "true"
+SKIP_SCREENSHOTS = os.getenv("SKIP_SCREENSHOTS", "false").lower() == "true"
+SLEEP_MULT = float(os.getenv("SLEEP_MULTIPLIER", "1.0"))
 
 # CTA helpers - floating dropdown renders after clicking "Tidak ada"
 DEFAULT_CTA_LABEL = "Tidak ada"
@@ -72,6 +75,15 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+def sleep_opt(seconds: float):
+    """Sleep with SLEEP_MULTIPLIER and FAST_MODE"""
+    import time
+    if FAST_MODE:
+        time.sleep(seconds * SLEEP_MULT * 0.6)
+    else:
+        time.sleep(seconds * SLEEP_MULT)
 
 
 def validate_config():
@@ -180,7 +192,7 @@ def login_to_google(driver):
         # Check if already logged in by navigating to GMB
         logger.info("Checking if already authenticated...")
         driver.get(GMB_URL)
-        time.sleep(3)
+        sleep_opt(1.5)
 
         # If we're at GMB without redirect to login, user is authenticated
         if "business.google.com" in driver.current_url and "accounts.google.com" not in driver.current_url:
@@ -204,11 +216,11 @@ def login_to_google(driver):
         input("\nPress Enter after you have successfully logged in: ")
 
         logger.info("Continuing with automation...")
-        time.sleep(2)
+        sleep_opt(1)
 
         # Verify login was successful
         driver.get(GMB_URL)
-        time.sleep(3)
+        sleep_opt(1.5)
 
         if "business.google.com" in driver.current_url:
             logger.info("[OK] Login successful! Session will be saved for next use.")
@@ -230,11 +242,11 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
         # Step 6: Fill form
         logger.info(f"Filling form for: {profile_name}")
-        time.sleep(3)
+        sleep_opt(1.5)
 
         # Switch to main content first
         driver.switch_to.default_content()
-        time.sleep(1)
+        sleep_opt(0.5)
 
         # Check for iframes in modal
         iframes = driver.find_elements(By.XPATH, "//iframe")
@@ -247,7 +259,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
             try:
                 logger.info(f"Checking iframe {i}...")
                 driver.switch_to.frame(iframe)
-                time.sleep(0.5)
+                sleep_opt(0.3)
 
                 textareas = driver.find_elements(By.XPATH, "//textarea")
                 logger.info(f"  Iframe {i}: found {len(textareas)} textareas")
@@ -270,7 +282,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
         if not desc_field:
             logger.info("Checking main content for textarea...")
             driver.switch_to.default_content()
-            time.sleep(0.5)
+            sleep_opt(0.3)
             textareas = driver.find_elements(By.XPATH, "//textarea")
             logger.info(f"Main content: found {len(textareas)} textareas")
             if textareas:
@@ -291,11 +303,11 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
         except:
             driver.execute_script("arguments[0].click();", desc_field)
 
-        time.sleep(0.5)
+        sleep_opt(0.3)
         desc_field.clear()
         desc_field.send_keys(DESCRIPTION)
         logger.info("Description filled")
-        time.sleep(1)
+        sleep_opt(0.5)
 
         # Upload photo
         logger.info("Uploading photo...")
@@ -323,11 +335,11 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
         file_input.send_keys(str(photo_path.absolute()))
         logger.info(f"Photo uploaded: {PHOTO}")
-        time.sleep(3)
+        sleep_opt(1.5)
 
         # Select CTA
         logger.info(f"Selecting CTA: {CTA}")
-        time.sleep(1)
+        sleep_opt(0.5)
 
         cta_found = False
 
@@ -349,10 +361,10 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
             if tombol_btn:
                 driver.execute_script("arguments[0].scrollIntoView(true);", tombol_btn)
-                time.sleep(0.5)
+                sleep_opt(0.3)
                 driver.execute_script("arguments[0].click();", tombol_btn)
                 logger.info("Clicked +Tombol button")
-                time.sleep(2)
+                sleep_opt(1)
 
                 # Find and click CTA combobox (Tidak ada)
                 logger.info("Looking for CTA combobox...")
@@ -361,10 +373,10 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                     for combo in cta_combos:
                         if combo.is_displayed():
                             driver.execute_script("arguments[0].scrollIntoView(true);", combo)
-                            time.sleep(0.3)
+                            sleep_opt(0.2)
                             driver.execute_script("arguments[0].click();", combo)
                             logger.info("Clicked CTA combobox")
-                            time.sleep(2)
+                            sleep_opt(1)
                             break
                 except Exception as e:
                     logger.debug(f"CTA combobox click failed: {e}")
@@ -382,7 +394,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                                 if opt.is_displayed():
                                     logger.info(f"    Found and clicking '{cand}'")
                                     driver.execute_script("arguments[0].scrollIntoView(true);", opt)
-                                    time.sleep(0.3)
+                                    sleep_opt(0.2)
                                     driver.execute_script("arguments[0].click();", opt)
                                     logger.info(f"Selected CTA: {cand}")
                                     cta_found = True
@@ -403,11 +415,11 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
         if not cta_found:
             logger.warning(f"Could not select CTA '{CTA}' - continuing anyway")
 
-        time.sleep(1)
+        sleep_opt(0.5)
 
         # Fill WA link
         logger.info("Filling WA link...")
-        time.sleep(2)
+        sleep_opt(1)
 
         url_field = None
         all_inputs = driver.find_elements(By.XPATH, "//input[@type='text' or @type='url']")
@@ -446,7 +458,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
         if url_field:
             try:
                 driver.execute_script("arguments[0].scrollIntoView(true);", url_field)
-                time.sleep(0.5)
+                sleep_opt(0.3)
                 url_field.clear()
                 url_field.send_keys(wa_link)
                 logger.info(f"WA link filled")
@@ -460,7 +472,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
         # Publish
         if not DRY_RUN:
             logger.info("Publishing post...")
-            time.sleep(2)
+            sleep_opt(1)
 
             try:
                 # Extended list of xpaths to find publish button
@@ -493,7 +505,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                 # If still not found, search by button containing common action keywords
                 if not publish_btn:
                     logger.warning("Standard xpaths failed. Full page button scan...")
-                    time.sleep(1)
+                    sleep_opt(0.5)
 
                     # Save screenshot before scanning
                     try:
@@ -539,7 +551,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
 
                 logger.info("Clicking publish button...")
                 driver.execute_script("arguments[0].scrollIntoView(true);", publish_btn)
-                time.sleep(1)
+                sleep_opt(0.5)
 
                 try:
                     publish_btn.click()
@@ -548,7 +560,7 @@ def fill_form_and_publish(driver, profile_name: str, wa_link: str):
                     driver.execute_script("arguments[0].click();", publish_btn)
 
                 logger.info("Publish button clicked")
-                time.sleep(3)
+                sleep_opt(1.5)
 
                 logger.info(f"Post published successfully for: {profile_name}")
                 return True
@@ -580,7 +592,7 @@ def process_store(driver, store_code: str, wa_link: str):
         # Step 1: Open GMB
         logger.info("Opening GMB...")
         driver.get(GMB_URL)
-        time.sleep(2)
+        sleep_opt(1)
 
         # Step 2: Find search field and search store code
         logger.info(f"Searching for: {store_code}")
@@ -590,12 +602,12 @@ def process_store(driver, store_code: str, wa_link: str):
         search_field.clear()
         search_field.send_keys(store_code)
         logger.info("Entered store code in search")
-        time.sleep(1)
+        sleep_opt(0.5)
 
         # Step 3: Press Enter
         search_field.send_keys(Keys.ENTER)
         logger.info("Pressed Enter")
-        time.sleep(3)
+        sleep_opt(2)
 
         # Debug: Check URL and take screenshot
         current_url = driver.current_url
@@ -634,39 +646,56 @@ def process_store(driver, store_code: str, wa_link: str):
         # Step 5: Post to each profile
         success_count = 0
         failed_count = 0
+        processed_count = 0
 
-        for profile_idx, add_post_btn in enumerate(add_post_buttons, 1):
+        while processed_count < len(add_post_buttons):
             try:
+                profile_idx = processed_count + 1
                 logger.info(f"=== Processing profile {profile_idx}/{len(add_post_buttons)} ===")
 
-                # Re-fetch button to avoid stale reference
-                # (DOM may change after first post)
-                if profile_idx > 1:
-                    all_btns = driver.find_elements(By.XPATH, "//button | //div[@role='button']")
-                    btn_count = 0
-                    add_post_btn = None
-                    for btn in all_btns:
-                        try:
-                            btn_text = btn.get_attribute('innerText') or btn.get_attribute('aria-label') or btn.get_attribute('title') or ''
-                            btn_text_lower = btn_text.lower()
-                            if 'postingan' in btn_text_lower or ('post' in btn_text_lower and 'buat' in btn_text_lower) or 'add post' in btn_text_lower:
-                                if btn.is_displayed():
-                                    btn_count += 1
-                                    if btn_count == profile_idx:
-                                        add_post_btn = btn
-                                        break
-                        except:
-                            continue
+                # Always re-fetch buttons from fresh search
+                logger.info("Re-searching to get fresh button list...")
+                driver.get(GMB_URL)
+                sleep_opt(1)
+
+                search_field = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//input[@role='combobox']"))
+                )
+                search_field.clear()
+                search_field.send_keys(store_code)
+                sleep_opt(0.5)
+                search_field.send_keys(Keys.ENTER)
+                logger.info("Re-searched store code")
+                sleep_opt(1.5)
+
+                # Find all buttons again
+                all_btns = driver.find_elements(By.XPATH, "//button | //div[@role='button']")
+                btn_count = 0
+                add_post_btn = None
+
+                for btn in all_btns:
+                    try:
+                        btn_text = btn.get_attribute('innerText') or btn.get_attribute('aria-label') or btn.get_attribute('title') or ''
+                        btn_text_lower = btn_text.lower()
+                        if 'postingan' in btn_text_lower or ('post' in btn_text_lower and 'buat' in btn_text_lower) or 'add post' in btn_text_lower:
+                            if btn.is_displayed():
+                                btn_count += 1
+                                if btn_count == profile_idx:
+                                    add_post_btn = btn
+                                    logger.info(f"Found button for profile {profile_idx}")
+                                    break
+                    except:
+                        continue
 
                 if not add_post_btn:
-                    logger.warning(f"Profile {profile_idx} button not found (may have been posted already)")
-                    continue
+                    logger.warning(f"Profile {profile_idx} button not found - all profiles likely processed")
+                    break
 
                 driver.execute_script("arguments[0].scrollIntoView(true);", add_post_btn)
-                time.sleep(0.5)
+                sleep_opt(0.3)
                 driver.execute_script("arguments[0].click();", add_post_btn)
                 logger.info(f"Clicked add post button for profile {profile_idx}")
-                time.sleep(2)
+                sleep_opt(1)
 
                 # Fill form and publish for this profile
                 if fill_form_and_publish(driver, f"Profile {profile_idx}", wa_link):
@@ -676,21 +705,7 @@ def process_store(driver, store_code: str, wa_link: str):
                     failed_count += 1
                     logger.warning(f"Profile {profile_idx} post failed")
 
-                # After posting, go back to search results to find next profile
-                if profile_idx < len(add_post_buttons):
-                    logger.info("Returning to search results for next profile...")
-                    driver.get(GMB_URL)
-                    time.sleep(2)
-
-                    # Re-search store code
-                    search_field = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH, "//input[@role='combobox']"))
-                    )
-                    search_field.clear()
-                    search_field.send_keys(store_code)
-                    time.sleep(1)
-                    search_field.send_keys(Keys.ENTER)
-                    time.sleep(3)
+                processed_count += 1
 
             except Exception as e:
                 logger.error(f"Profile {profile_idx} processing failed: {e}")
@@ -744,7 +759,7 @@ def delete_posts(driver, store_code: str):
         # Step 1: Open GMB
         logger.info("Opening GMB...")
         driver.get(GMB_URL)
-        time.sleep(2)
+        sleep_opt(1)
 
         # Step 2: Search store code
         logger.info(f"Searching for: {store_code}")
@@ -754,11 +769,11 @@ def delete_posts(driver, store_code: str):
         search_field.clear()
         search_field.send_keys(store_code)
         logger.info("Entered store code")
-        time.sleep(1)
+        sleep_opt(0.5)
 
         search_field.send_keys(Keys.ENTER)
         logger.info("Pressed Enter")
-        time.sleep(3)
+        sleep_opt(1.5)
 
         # Step 3: Find all "lihat profil" / "see profile" buttons
         logger.info("Finding all 'lihat profil' buttons...")
@@ -821,7 +836,7 @@ def delete_posts(driver, store_code: str):
                 try:
                     driver.get(profile_url)
                     logger.info("Navigated to GMB profile page")
-                    time.sleep(4)
+                    sleep_opt(2)
                 except Exception as e:
                     logger.error(f"Navigation failed: {e}")
                     profile_failed += 1
@@ -860,13 +875,13 @@ def delete_posts(driver, store_code: str):
                 if postingan_btn:
                     logger.info("Clicking Postingan button/tab...")
                     driver.execute_script("arguments[0].scrollIntoView(true);", postingan_btn)
-                    time.sleep(0.5)
+                    sleep_opt(0.3)
                     driver.execute_script("arguments[0].click();", postingan_btn)
                     logger.info("Clicked Postingan")
-                    time.sleep(3)
+                    sleep_opt(1.5)
                 else:
                     logger.info("No Postingan button found - posts might be visible already")
-                    time.sleep(2)
+                    sleep_opt(1)
 
                 # Take screenshot of postingan list/area
                 try:
@@ -877,7 +892,7 @@ def delete_posts(driver, store_code: str):
 
                 # Step 6: Find top-most post item dengan "Book your stay" caption
                 logger.info("Finding top-most post item in list...")
-                time.sleep(1)
+                sleep_opt(0.5)
 
                 js_find_top_post = """
                 // Cari semua post items yang berisi "Book your stay"
@@ -948,12 +963,12 @@ def delete_posts(driver, store_code: str):
                     profile_failed += 1
                     if new_windows:
                         driver.close()
-                        time.sleep(1)
+                        sleep_opt(0.5)
                         driver.switch_to.window(windows_before[0])
                     continue
 
                 logger.info(f"Found {result.get('count')} posts. Top post: {result.get('topText')}, Tag: {result.get('topTag')}")
-                time.sleep(0.5)
+                sleep_opt(0.3)
 
                 # Step 7: Click top-most post caption
                 logger.info("Clicking top-most post caption...")
@@ -1022,7 +1037,7 @@ def delete_posts(driver, store_code: str):
                     click_result = driver.execute_script(js_click_top_post)
                     if click_result.get('success'):
                         logger.info(f"Successfully clicked post. Clicked element: {click_result.get('clickedTag')}")
-                        time.sleep(3)
+                        sleep_opt(1.5)
 
                         # Take screenshot to verify detail opened
                         try:
@@ -1050,7 +1065,7 @@ def delete_posts(driver, store_code: str):
                 # Close and return to search for next profile
                 logger.info("Going back to search results for next profile...")
                 driver.get(GMB_URL)
-                time.sleep(2)
+                sleep_opt(1)
 
                 # Re-search store code
                 search_field = WebDriverWait(driver, 10).until(
@@ -1058,10 +1073,10 @@ def delete_posts(driver, store_code: str):
                 )
                 search_field.clear()
                 search_field.send_keys(store_code)
-                time.sleep(1)
+                sleep_opt(0.5)
                 search_field.send_keys(Keys.ENTER)
                 logger.info("Re-searched store code")
-                time.sleep(3)
+                sleep_opt(1.5)
 
             except Exception as e:
                 logger.error(f"Profile {profile_idx + 1} error: {e}")
@@ -1069,7 +1084,7 @@ def delete_posts(driver, store_code: str):
                 try:
                     if new_windows:
                         driver.close()
-                        time.sleep(1)
+                        sleep_opt(0.5)
                         driver.switch_to.window(windows_before[0])
                 except:
                     pass

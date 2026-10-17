@@ -1,2 +1,4 @@
 store_code,status,timestamp,error
-PWT123,SUCCESS,2026-10-13T08:10:50.931137,
+PWT123,SUCCESS,2026-10-18T02:02:27.597299,No profiles found for store code
+KLAA074,FAILED,2026-10-18T02:02:27.597309,No profiles found for store code
+STORE_CODE_003,FAILED,2026-10-18T02:02:27.597314,No profiles found for store code
