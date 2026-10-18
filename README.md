@@ -70,7 +70,187 @@ MAX_STORES=1
 
 All stores use the same description, photo, and CTA. Only URL is unique per store.
 
-## Run
+## Multi-Post Mode (Mode 3)
+
+### Overview
+
+Mode 3 publishes **three independent posts** to every property matching a store code. Each post has custom caption, image, CTA, and URL.
+
+Example: Store code `YOGA0017` matches 2 properties → publishes 6 total posts (3 per property).
+
+### Setup
+
+#### 1. Create `multi_post_config.json`
+
+Copy example from `multi_post_config.json`:
+
+```json
+{
+  "post_types": [
+    {
+      "id": "post_1",
+      "name": "Summer Promotion",
+      "caption": "Summer Special! Book now.",
+      "image": "photos/post_1.jpg",
+      "cta": "Book",
+      "url": "https://example.com/booking-summer"
+    },
+    {
+      "id": "post_2",
+      "name": "Winter Package",
+      "caption": "Cozy winter getaway.",
+      "image": "photos/post_2.jpg",
+      "cta": "Book",
+      "url": "https://example.com/booking-winter"
+    },
+    {
+      "id": "post_3",
+      "name": "New Year Deal",
+      "caption": "Start 2024 with us!",
+      "image": "photos/post_3.jpg",
+      "cta": "Book",
+      "url": "https://example.com/booking-newyear"
+    }
+  ]
+}
+```
+
+**Requirements:**
+- Exactly 3 post types
+- Each must have: `id`, `name`, `caption`, `image`, `cta`, `url`
+- Image paths must exist
+- URLs must be valid
+
+#### 2. Prepare images
+
+Save 3 images to `photos/`:
+```
+photos/
+  post_1.jpg
+  post_2.jpg
+  post_3.jpg
+```
+
+#### 3. Run Multi-Post mode
+
+```powershell
+py gmb_automation.py
+```
+
+```
+GMB AUTOMATION - PILIH MODE
+1. Add Post
+2. Delete Post
+3. Multi-Post (3 Content Types)
+
+Pilih mode (1, 2, atau 3): 3
+```
+
+### Workflow
+
+For each store code:
+
+1. Search store code in GMB
+2. Find ALL matching properties
+3. For each property:
+   - Publish Post 1 (caption, image, URL)
+   - Publish Post 2 (caption, image, URL)
+   - Publish Post 3 (caption, image, URL)
+4. Track each property/post combination independently
+
+### Status tracking
+
+Results saved in `multi_post_status.csv`:
+
+```
+store_code,property_identifier,property_name,post_type_id,status,attempts,timestamp,error
+YOGA0017,prop_YOGA0017_1,Property 1,post_1,SUCCESS,1,2026-10-17T...
+YOGA0017,prop_YOGA0017_1,Property 1,post_2,SUCCESS,1,2026-10-17T...
+YOGA0017,prop_YOGA0017_1,Property 1,post_3,SUCCESS,1,2026-10-17T...
+YOGA0017,prop_YOGA0017_2,Property 2,post_1,SUCCESS,1,2026-10-17T...
+YOGA0017,prop_YOGA0017_2,Property 2,post_2,FAILED,1,2026-10-17T...,URL field not found
+```
+
+Statuses:
+- `SUCCESS` — post published
+- `DRY_RUN_READY` — prepared in dry-run mode
+- `FAILED` — error during publishing
+- `PROCESSING` — currently processing
+
+### Dry-run test
+
+Edit `.env`:
+```env
+DRY_RUN=true
+MAX_STORES=1
+```
+
+Run:
+```powershell
+py gmb_automation.py
+# Select mode 3
+```
+
+Verifies:
+- Config loads (3 post types)
+- Images exist
+- All posts can be filled (no publish)
+- Updates `multi_post_status.csv` → `DRY_RUN_READY`
+
+### Publish to real properties
+
+Edit `.env`:
+```env
+DRY_RUN=false
+MAX_STORES=1
+```
+
+Run same command. Posts published immediately.
+
+### Resume safely
+
+If interrupted:
+1. Already-SUCCESS posts skipped
+2. FAILED/PENDING posts retried
+3. No duplicate posts
+
+### Logs and screenshots
+
+Multi-post logs in `logs/gmb_automation.log`:
+
+```
+=== MULTI-POST: Processing YOGA0017 ===
+Found 2 properties to post to
+
+=== Processing property 1/2 ===
+Publishing post post_1 to Property 1
+  Caption: Summer Special! Book now.
+  CTA: Book, URL: https://example.com/booking-summer
+Caption filled for post_1
+Image uploaded for post_1: photos/post_1.jpg
+Selected CTA for post_1: Book
+URL filled for post_1
+Post post_1 published successfully
+...
+
+=== MULTI-POST SUMMARY FOR YOGA0017 ===
+Total posts: 6
+Successful: 6
+Failed: 0
+```
+
+Error screenshots saved to `logs/screenshots/`:
+- `{store_code}_multi_{property_idx}_{post_id}_error.png`
+
+### Limitations
+
+- One store code can match multiple properties, but each is processed separately
+- If property matching is unreliable (GMB UI changes), manually verify in logs and screenshots
+- No automatic retry on network errors — rerun automation safely
+
+All stores use the same description, photo, and CTA. Only URL is unique per store.
+
+
 
 ### First run — login to Google
 
@@ -259,7 +439,13 @@ GMB_Automation/
 - `fill_url()` — Enter unique URL for CTA
 - `publish_post()` — Click Publish (or skip if DRY_RUN)
 - `process_store()` — Run full workflow for one store
-- `main()` — Loop through pending stores
+- `load_multi_post_config()` — Load 3 post types from JSON
+- `init_multi_post_status_csv()` — Initialize multi-post tracking
+- `load_multi_post_status()` — Read multi-post status
+- `update_multi_post_status()` — Write multi-post result
+- `fill_form_and_publish_multi()` — Publish post with custom config
+- `process_store_multi_post()` — Multi-post workflow for all properties
+- `main()` — Mode selection menu and dispatch
 
 ## Config
 
@@ -312,6 +498,3 @@ py -m pip install -r requirements.txt
 Copy-Item -Path ".env.example" -Destination ".env"
 py gmb_automation.py
 ```
-=======
-# gmb-automation
->>>>>>> f9ba699265d41a542838ee8fa304ca50c22592cb

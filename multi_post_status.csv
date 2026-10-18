@@ -1,0 +1,7 @@
+store_code,property_identifier,property_name,post_type_id,status,attempts,timestamp,error
+PWT123,prop_PWT123_1,Property 2,post_1,SUCCESS,0,2026-10-18T15:08:40.102729,
+PWT123,prop_PWT123_1,Property 2,post_2,SUCCESS,0,2026-10-18T15:08:40.102753,
+PWT123,prop_PWT123_1,Property 2,post_3,SUCCESS,0,2026-10-18T15:08:40.102765,
+PWT123,prop_PWT123_2,Property 2,post_1,SUCCESS,0,2026-10-18T15:08:40.102777,
+PWT123,prop_PWT123_2,Property 2,post_2,SUCCESS,0,2026-10-18T15:08:40.102787,
+PWT123,prop_PWT123_2,Property 2,post_3,SUCCESS,0,2026-10-18T15:08:40.102798,

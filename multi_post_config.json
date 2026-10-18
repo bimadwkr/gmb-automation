@@ -1,0 +1,28 @@
+{
+  "post_types": [
+    {
+      "id": "post_1",
+      "name": "Summer Promotion",
+      "caption": "Summer Special! Book your stay now and enjoy 20% discount. Limited time offer!",
+      "image": "photos/FB RD.png",
+      "cta": "Book",
+      "url": "https://example.com/booking-summer-2024"
+    },
+    {
+      "id": "post_2",
+      "name": "Winter Package",
+      "caption": "Cozy winter getaway awaits. Reserve your room for the perfect winter escape.",
+      "image": "photos/IG RD.png",
+      "cta": "Book",
+      "url": "https://example.com/booking-winter-2024"
+    },
+    {
+      "id": "post_3",
+      "name": "New Year Deal",
+      "caption": "Start your new year with us! Special packages available. Book today.",
+      "image": "photos/WA RD.jpg",
+      "cta": "Book",
+      "url": "https://example.com/booking-newyear-2024"
+    }
+  ]
+}

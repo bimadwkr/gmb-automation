@@ -98,14 +98,135 @@ py gmb_automation.py
 ```
 
 Script akan:
-1. Tanya mode: ketik `1` (Add Post) atau `2` (Delete Post)
+1. Tanya mode: ketik `1` (Add Post), `2` (Delete Post), atau `3` (Multi-Post)
 2. Buka Chrome window untuk login Google
 3. Manual: login ke akun Google Business Profile
 4. Setelah login, kembali ke terminal, tekan Enter
 
 Session tersimpan di `./chrome-profile/`. Run berikutnya skip login step.
 
-## 6. Test (Dry Run)
+## 6. Mode Selection
+
+### Mode 1: Add Post
+- Single post per store code
+- Static description, photo, CTA
+- Unique URL per store (from `stores.txt`)
+
+### Mode 2: Delete Post
+- Delete posts from all matching properties
+- Search store code, find profiles, delete posts
+
+### Mode 3: Multi-Post (3 Content Types)
+- Three independent posts per property
+- Each post: custom caption, image, CTA, URL
+- Requires: `multi_post_config.json` + 3 images
+
+#### Mode 3 Setup
+
+Create `multi_post_config.json`:
+```json
+{
+  "post_types": [
+    {
+      "id": "post_1",
+      "name": "Post 1",
+      "caption": "Your caption here",
+      "image": "photos/post_1.jpg",
+      "cta": "Book",
+      "url": "https://your-link-1.com"
+    },
+    {
+      "id": "post_2",
+      "name": "Post 2",
+      "caption": "Your caption here",
+      "image": "photos/post_2.jpg",
+      "cta": "Book",
+      "url": "https://your-link-2.com"
+    },
+    {
+      "id": "post_3",
+      "name": "Post 3",
+      "caption": "Your caption here",
+      "image": "photos/post_3.jpg",
+      "cta": "Book",
+      "url": "https://your-link-3.com"
+    }
+  ]
+}
+```
+
+Prepare 3 images in `photos/`:
+- `photos/post_1.jpg`
+- `photos/post_2.jpg`
+- `photos/post_3.jpg`
+
+**Important:**
+- Exactly 3 post types required
+- All image files must exist
+- All URLs must be valid
+- Each post can have different captions and URLs
+
+#### Mode 3 Test (Dry-Run)
+
+Edit `.env`:
+```env
+DRY_RUN=true
+MAX_STORES=1
+```
+
+Run:
+```powershell
+py gmb_automation.py
+```
+
+Select mode `3`.
+
+Script akan:
+- Load and validate `multi_post_config.json`
+- Cari store code di GMB
+- Prepare semua 3 post untuk semua matching properties
+- **Jangan publish** (karena DRY_RUN=true)
+- Update `multi_post_status.csv` → `DRY_RUN_READY`
+
+Check:
+```powershell
+cat logs/gmb_automation.log
+cat multi_post_status.csv
+```
+
+#### Mode 3 Publish
+
+Edit `.env`:
+```env
+DRY_RUN=false
+MAX_STORES=1
+```
+
+Run:
+```powershell
+py gmb_automation.py
+```
+
+Select mode `3`. 
+
+Posts published immediately. Check `multi_post_status.csv` → `SUCCESS` atau `FAILED`.
+
+### Multiple Stores (Mode 3)
+
+Edit `.env`:
+```env
+DRY_RUN=false
+MAX_STORES=10
+```
+
+or:
+```env
+MAX_STORES=0
+```
+
+(0 = process all pending stores)
+
+## 7. Test (Dry Run)
 
 File `.env` harus set `DRY_RUN=true` dan `MAX_STORES=1`.
 
