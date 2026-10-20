@@ -4,5 +4,8 @@ __pycache__/
 credentials.json
 .env
 chrome-profile/
-logs/screenshots/
+logs/
 .DS_Store
+status.csv
+multi_post_status.csv
+stores.txt
