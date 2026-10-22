@@ -58,6 +58,7 @@ def get_cta_candidates(cta: str):
 
 STORES_FILE = Path("stores.txt")
 STATUS_FILE = Path("status.csv")
+DELETE_STATUS_FILE = Path("delete_status.csv")
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 SCREENSHOT_DIR = LOG_DIR / "screenshots"
@@ -145,6 +146,41 @@ def update_status(store_code, status, error=""):
                 "error": error,
             })
     logger.info(f"Store {store_code}: {status}")
+
+
+def init_delete_status_csv():
+    if not DELETE_STATUS_FILE.exists():
+        with open(DELETE_STATUS_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["store_code", "status", "timestamp", "error"])
+            writer.writeheader()
+        logger.info("Created delete_status.csv")
+
+
+def load_delete_status():
+    status = {}
+    if DELETE_STATUS_FILE.exists():
+        with open(DELETE_STATUS_FILE, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                status[row["store_code"]] = row["status"]
+    return status
+
+
+def update_delete_status(store_code, status, error=""):
+    all_status = load_delete_status()
+    all_status[store_code] = status
+
+    with open(DELETE_STATUS_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["store_code", "status", "timestamp", "error"])
+        writer.writeheader()
+        for code, st in all_status.items():
+            writer.writerow({
+                "store_code": code,
+                "status": st,
+                "timestamp": datetime.now().isoformat(),
+                "error": error,
+            })
+    logger.info(f"Store {store_code} [Delete]: {status}")
 
 
 def create_driver():
@@ -1035,23 +1071,13 @@ def process_store(driver, store_code: str, wa_link: str):
 
 
 def delete_posts(driver, store_code: str):
-    """Delete posts from ALL business profiles for a store
-
-    Flow:
-    1. Search store code → list profil bisnis muncul
-    2. Find semua "lihat profil" buttons
-    3. For each button:
-       a. Klik "lihat profil" → tab baru terbuka
-       b. Di profile page, cari button "Postingan"
-       c. Klik "Postingan" → list post muncul
-       d. For each post: klik titik 3 → klik delete
-       e. Close tab, back to search
-    """
+    """Delete posts containing 'WhatsApp' from all business profiles for a store"""
     import time
+    import re
 
     try:
-        logger.info(f"Processing delete for: {store_code}")
-        update_status(store_code, "PROCESSING")
+        logger.info(f"Processing delete for store: {store_code} (DRY_RUN={DRY_RUN})")
+        update_delete_status(store_code, "PROCESSING")
 
         # Step 1: Open GMB
         logger.info("Opening GMB...")
@@ -1065,346 +1091,355 @@ def delete_posts(driver, store_code: str):
         )
         search_field.clear()
         search_field.send_keys(store_code)
-        logger.info("Entered store code")
         time.sleep(0.1)
-
         search_field.send_keys(Keys.ENTER)
-        logger.info("Pressed Enter")
         time.sleep(1.0)
 
-        # Step 3: Find all "lihat profil" / "see profile" buttons
-        logger.info("Finding all 'lihat profil' buttons...")
-
+        # Step 3: Find all profile buttons ("lihat profil" / "see profile" / post buttons / cards)
+        logger.info("Finding all profile buttons...")
         lihat_profil_buttons = []
         try:
-            # Cari semua button yang text-nya mengandung "lihat profil" atau "see profile"
-            buttons = driver.find_elements(By.XPATH, "//button | //a | //div[@role='button']")
-            logger.info(f"Found {len(buttons)} clickable elements")
-
+            buttons = driver.find_elements(By.XPATH, "//button | //a | //div[@role='button'] | //span[@role='button']")
             for btn in buttons:
                 try:
-                    btn_text = btn.text or btn.get_attribute('aria-label') or ""
-                    btn_text_lower = btn_text.lower()
+                    btn_text = btn.text or btn.get_attribute('aria-label') or btn.get_attribute('title') or ""
+                    btn_text_lower = btn_text.lower().strip()
 
-                    if 'lihat profil' in btn_text_lower or 'see profile' in btn_text_lower:
+                    # Exclude global/unrelated buttons
+                    if any(skip in btn_text_lower for skip in ['create post', 'buat postingan', 'business profile manager', 'pengelola profil bisnis']):
+                        continue
+
+                    if any(kw in btn_text_lower for kw in ['lihat profil', 'see profile', 'view profile', 'profil', 'profile', 'postingan', 'post', 'add post']):
                         if btn.is_displayed():
-                            lihat_profil_buttons.append({
-                                'element': btn,
-                                'text': btn_text,
-                                'href': btn.get_attribute('href') or ""
-                            })
-                            logger.info(f"  Found: {btn_text[:50]}")
+                            href = btn.get_attribute('href') or ""
+                            if not any(b['element'] == btn or (href and b['href'] == href) for b in lihat_profil_buttons):
+                                # Prioritize buttons with href or 'profile' / 'profil'
+                                if href or 'profile' in btn_text_lower or 'profil' in btn_text_lower:
+                                    lihat_profil_buttons.append({
+                                        'element': btn,
+                                        'text': btn_text,
+                                        'href': href
+                                    })
+                                    logger.info(f"  Found profile button: {btn_text[:50]} (href: {href})")
                 except:
                     pass
         except Exception as e:
-            logger.error(f"Error finding buttons: {e}")
+            logger.error(f"Error finding profile buttons: {e}")
 
-        logger.info(f"Found {len(lihat_profil_buttons)} 'lihat profil' buttons")
+        logger.info(f"Found {len(lihat_profil_buttons)} profile buttons")
 
         if len(lihat_profil_buttons) == 0:
-            logger.error("No 'lihat profil' buttons found")
-            update_status(store_code, "FAILED", "No profile buttons found")
-            return
+            logger.info("No explicit profile buttons found; treating current page as profile.")
+            lihat_profil_buttons.append({
+                'element': None,
+                'text': 'Current Page',
+                'href': ''
+            })
 
-        # Process each profile
         profile_ok = 0
         profile_failed = 0
+        total_whatsapp_found = 0
+        total_deleted = 0
+        dry_run_matches = 0
 
         for profile_idx, btn_info in enumerate(lihat_profil_buttons):
             try:
                 logger.info(f"\n=== Profile {profile_idx + 1}/{len(lihat_profil_buttons)} ===")
-
-                # Get button reference dan URL sebelum navigate (untuk menghindari stale element)
                 profile_url = btn_info.get('href')
                 btn_text = btn_info.get('text')
                 logger.info(f"Profile: {btn_text} | URL: {profile_url}")
 
-                # Step 4a: Klik "lihat profil" button
-                btn_elem = btn_info['element']
-
-                # Record window handles sebelum klik
-                windows_before = driver.window_handles
-                logger.info(f"Windows before: {len(windows_before)}")
-
-                # CHANGED: Navigate directly to profile URL instead of clicking button
-                profile_url = btn_info.get('href')
-                logger.info(f"Navigating directly to profile: {profile_url}")
-
-                try:
+                if profile_url:
                     driver.get(profile_url)
-                    logger.info("Navigated to GMB profile page")
-                    time.sleep(1.2)
-                except Exception as e:
-                    logger.error(f"Navigation failed: {e}")
-                    profile_failed += 1
-                    continue
+                else:
+                    driver.execute_script("arguments[0].click();", btn_info['element'])
+                time.sleep(1.2)
 
-                # Take screenshot of profile page
+                # Screenshot profile page
                 try:
                     driver.save_screenshot(str(SCREENSHOT_DIR / f"{store_code}_profile_{profile_idx + 1}_gmb.png"))
-                    logger.info(f"Screenshot: GMB profile page")
                 except:
                     pass
 
-                logger.info(f"Current URL: {driver.current_url}")
-
-                # Step 5: Look for posts on GMB profile page directly
-                # Posts might be in a list/carousel or need to find Postingan tab/button
+                # Step 4: Look for 'Postingan' tab/button
                 logger.info("Looking for 'Postingan' tab/button on profile...")
-
                 postingan_btn = None
                 buttons_on_page = driver.find_elements(By.XPATH, "//button | //a | //div[@role='button'] | //div[@role='tab']")
-                logger.info(f"Found {len(buttons_on_page)} buttons/tabs on page")
-
                 for btn in buttons_on_page:
                     try:
-                        btn_text = btn.text or btn.get_attribute('aria-label') or ""
-                        btn_text_lower = btn_text.lower()
-
-                        if btn_text_lower == 'postingan' or 'post' in btn_text_lower:
+                        b_text = btn.text or btn.get_attribute('aria-label') or ""
+                        b_text_lower = b_text.lower()
+                        if b_text_lower == 'postingan' or 'post' in b_text_lower:
                             if btn.is_displayed():
                                 postingan_btn = btn
-                                logger.info(f"Found 'Postingan' button/tab: {btn_text}")
+                                logger.info(f"Found 'Postingan' tab/button: {b_text}")
                                 break
                     except:
                         pass
 
                 if postingan_btn:
-                    logger.info("Clicking Postingan button/tab...")
                     driver.execute_script("arguments[0].scrollIntoView(true);", postingan_btn)
                     time.sleep(0.15)
                     driver.execute_script("arguments[0].click();", postingan_btn)
-                    logger.info("Clicked Postingan")
                     time.sleep(1.0)
                 else:
-                    logger.info("No Postingan button found - posts might be visible already")
+                    logger.info("No explicit Postingan button found - checking posts area directly")
                     time.sleep(0.6)
 
-                # Take screenshot of postingan list/area
-                try:
-                    driver.save_screenshot(str(SCREENSHOT_DIR / f"{store_code}_profile_{profile_idx + 1}_postingan_list.png"))
-                    logger.info(f"Screenshot: postingan list area")
-                except:
-                    pass
-
-                # Step 6: Find top-most post item dengan "Book your stay" caption
-                logger.info("Finding top-most post item in list...")
-                time.sleep(0.1)
-
-                js_find_top_post = """
-                // Cari semua post items yang berisi "Book your stay"
-                // Return yang paling atas (min top value)
-
-                let posts = [];
-                let allElements = document.querySelectorAll('div, article, li, [role="article"], [role="listitem"]');
-
-                for (let elem of allElements) {
-                    let text = elem.innerText || elem.textContent || '';
-                    let rect = elem.getBoundingClientRect();
-
-                    // Filter: berisi "book your stay", visible, reasonable size
-                    if (text.toLowerCase().includes('book your stay') &&
-                        text.length > 20 && text.length < 500 &&
-                        rect.width > 80 && rect.height > 80 &&
-                        rect.top >= 0 &&
-                        elem.offsetParent !== null) {
-
-                        // Cek bukan nested element
-                        let parent = elem.parentElement;
-                        let isNested = false;
-                        for (let i = 0; i < 2; i++) {
-                            if (parent && (parent.innerText || '').toLowerCase().includes('book your stay')) {
-                                isNested = true;
-                                break;
-                            }
-                            parent = parent ? parent.parentElement : null;
-                        }
-
-                        if (!isNested) {
-                            posts.push({
-                                elem: elem,
-                                top: rect.top,
-                                text: text.substring(0, 80),
-                                tag: elem.tagName
-                            });
-                        }
-                    }
-                }
-
-                // Sort by top position (find topmost)
-                posts.sort((a, b) => a.top - b.top);
-
-                if (posts.length > 0) {
-                    let topPost = posts[0];
-                    return {
-                        found: true,
-                        count: posts.length,
-                        topText: topPost.text,
-                        topTag: topPost.tag,
-                        topPos: topPost.top
-                    };
-                }
-
-                return {
-                    found: false,
-                    count: posts.length,
-                    allElementsCount: allElements.length
-                };
-                """
-
-                result = driver.execute_script(js_find_top_post)
-                logger.info(f"Post search result: {result}")
-
-                if not result.get('found'):
-                    logger.warning(f"No posts found. Total elements: {result.get('allElementsCount')}")
-                    profile_failed += 1
-                    if new_windows:
-                        driver.close()
-                        time.sleep(0.1)
-                        driver.switch_to.window(windows_before[0])
-                    continue
-
-                logger.info(f"Found {result.get('count')} posts. Top post: {result.get('topText')}, Tag: {result.get('topTag')}")
-                time.sleep(0.15)
-
-                # Step 7: Click top-most post caption
-                logger.info("Clicking top-most post caption...")
-
-                js_click_top_post = """
-                // Cari dan klik post paling atas
-                let posts = [];
-                let allElements = document.querySelectorAll('div, article, li, [role="article"], [role="listitem"]');
-
-                for (let elem of allElements) {
-                    let text = elem.innerText || elem.textContent || '';
-                    let rect = elem.getBoundingClientRect();
-
-                    if (text.toLowerCase().includes('book your stay') &&
-                        text.length > 20 && text.length < 500 &&
-                        rect.width > 80 && rect.height > 80 &&
-                        rect.top >= 0 &&
-                        elem.offsetParent !== null) {
-
-                        let parent = elem.parentElement;
-                        let isNested = false;
-                        for (let i = 0; i < 2; i++) {
-                            if (parent && (parent.innerText || '').toLowerCase().includes('book your stay')) {
-                                isNested = true;
-                                break;
-                            }
-                            parent = parent ? parent.parentElement : null;
-                        }
-
-                        if (!isNested) {
-                            posts.push({
-                                elem: elem,
+                # Step 5: Find matching WhatsApp posts using JS
+                js_find_whatsapp_posts = """
+                let cards = document.querySelectorAll('div[role="article"], article, div[role="listitem"]');
+                let matches = [];
+                for (let i = 0; i < cards.length; i++) {
+                    let card = cards[i];
+                    if (!card.offsetParent) continue;
+                    let text = card.innerText || card.textContent || '';
+                    let normalized = text.replace(/\\s+/g, ' ').trim();
+                    let regex = /\\bwhatsapp\\b/i;
+                    if (regex.test(normalized)) {
+                        let rect = card.getBoundingClientRect();
+                        if (rect.width > 40 && rect.height > 40 && rect.top >= 0) {
+                            matches.push({
+                                index: i,
+                                text: normalized.substring(0, 120),
                                 top: rect.top
                             });
                         }
                     }
                 }
-
-                // Sort by top (find topmost)
-                posts.sort((a, b) => a.top - b.top);
-
-                if (posts.length > 0) {
-                    let topPost = posts[0].elem;
-                    topPost.scrollIntoView({block: 'center'});
-
-                    // Wait scroll
-                    await new Promise(r => setTimeout(r, 300));
-
-                    // Get center point
-                    let rect = topPost.getBoundingClientRect();
-                    let centerX = rect.left + rect.width / 2;
-                    let centerY = rect.top + rect.height / 2;
-
-                    // Find top-most element at that point
-                    let clickTarget = document.elementFromPoint(centerX, centerY);
-                    if (clickTarget) {
-                        clickTarget.click();
-                        return {success: true, clickedTag: clickTarget.tagName};
-                    }
-                }
-
-                return {success: false};
+                matches.sort((a, b) => a.top - b.top);
+                return matches;
                 """
 
-                try:
-                    click_result = driver.execute_script(js_click_top_post)
-                    if click_result.get('success'):
-                        logger.info(f"Successfully clicked post. Clicked element: {click_result.get('clickedTag')}")
-                        time.sleep(1.0)
+                whatsapp_posts = driver.execute_script(js_find_whatsapp_posts) or []
+                logger.info(f"Inspected profile posts. Found {len(whatsapp_posts)} WhatsApp posts.")
 
-                        # Take screenshot to verify detail opened
-                        try:
-                            driver.save_screenshot(str(SCREENSHOT_DIR / f"{store_code}_profile_{profile_idx + 1}_post_detail.png"))
-                            logger.info(f"Screenshot: post detail page")
-                        except:
-                            pass
+                if not whatsapp_posts:
+                    logger.info(f"No WhatsApp posts found on profile {profile_idx + 1}")
+                    if len(lihat_profil_buttons) > 1:
+                        driver.get(GMB_URL)
+                        time.sleep(0.6)
+                    continue
 
-                        logger.info(f"POST DETAIL OPENED SUCCESSFULLY FOR PROFILE {profile_idx + 1}")
-                        profile_ok += 1
+                total_whatsapp_found += len(whatsapp_posts)
 
-                        # TESTING ONLY - Do NOT delete
-                        logger.info("TEST MODE: Not deleting, just verifying click works")
+                if DRY_RUN:
+                    logger.info(f"DRY RUN MODE: Found {len(whatsapp_posts)} WhatsApp posts on profile {profile_idx + 1}. Not deleting.")
+                    for p in whatsapp_posts:
+                        logger.info(f"  [DRY RUN MATCH] Text: {p['text']}")
+                    dry_run_matches += len(whatsapp_posts)
+                    profile_ok += 1
+                    if len(lihat_profil_buttons) > 1:
+                        driver.get(GMB_URL)
+                        time.sleep(0.6)
+                    continue
 
-                    else:
-                        logger.warning("Failed to click post")
-                        profile_failed += 1
+                # Step 6: Delete each matching WhatsApp post
+                profile_deleted_count = 0
+                for post_idx in range(len(whatsapp_posts)):
+                    try:
+                        posts_current = driver.execute_script(js_find_whatsapp_posts) or []
+                        if not posts_current:
+                            logger.info("No more WhatsApp posts found during deletion loop.")
+                            break
 
-                except Exception as e:
-                    logger.error(f"Click post failed: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
+                        target_post_info = posts_current[0]
+                        logger.info(f"Processing WhatsApp post: {target_post_info['text']}")
+
+                        js_scroll_and_click_menu = """
+                        let cards = document.querySelectorAll('div[role="article"], article, div[role="listitem"]');
+                        let targetCard = null;
+
+                        for (let card of cards) {
+                            let text = card.innerText || card.textContent || '';
+                            if (text.match(/\\bwhatsapp\\b/i)) {
+                                let rect = card.getBoundingClientRect();
+                                if (rect.width > 20 && rect.height > 20 && rect.top >= -200) {
+                                    targetCard = card;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!targetCard) {
+                            let all = document.querySelectorAll('*');
+                            for (let el of all) {
+                                if (el.children.length === 0 && (el.innerText || '').match(/\\bwhatsapp\\b/i)) {
+                                    let card = el.closest('div[role="article"], article, div[role="listitem"], div');
+                                    if (card) {
+                                        targetCard = card;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (targetCard) {
+                            targetCard.scrollIntoView({block: 'center'});
+
+                            let searchRoot = targetCard.closest('[data-id]') || targetCard.closest('[role="none"]') || targetCard.parentElement.parentElement || targetCard.parentElement;
+
+                            let candidates = searchRoot.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], svg, i');
+                            let validCandidates = [];
+
+                            for (let c of candidates) {
+                                let el = c.tagName.toLowerCase() === 'svg' || c.tagName.toLowerCase() === 'i' ? c.closest('button, [role="button"], span, div') : c;
+                                if (!el) continue;
+
+                                let txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                                if (txt.includes('whatsapp') || txt.includes('book') || txt.includes('pesan') || txt.includes('reservasi') || txt.length > 40) {
+                                    continue;
+                                }
+
+                                let rect = el.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    validCandidates.push({
+                                        element: el,
+                                        right: rect.right,
+                                        top: rect.top,
+                                        html: el.outerHTML.substring(0, 100)
+                                    });
+                                }
+                            }
+
+                            validCandidates.sort((a, b) => b.right - a.right);
+
+                            if (validCandidates.length > 0) {
+                                let best = validCandidates[0].element;
+                                best.click();
+                                return {
+                                    success: true,
+                                    message: 'Clicked menu button by excluding caption text',
+                                    clickedHTML: best.outerHTML.substring(0, 100),
+                                    count: validCandidates.length
+                                };
+                            } else {
+                                let allBtns = searchRoot.querySelectorAll('button, [role="button"]');
+                                for (let b of allBtns) {
+                                    let t = (b.innerText || '').trim();
+                                    if (!t.toLowerCase().includes('whatsapp') && t.length < 30) {
+                                        b.click();
+                                        return {success: true, message: 'Clicked fallback non-text button'};
+                                    }
+                                }
+
+                                let btnInfo = [];
+                                for (let b of allBtns) {
+                                    btnInfo.push({text: b.innerText, aria: b.getAttribute('aria-label'), html: b.outerHTML.substring(0, 80)});
+                                }
+                                return {
+                                    success: false,
+                                    message: 'Menu button not found by exclusion filter',
+                                    buttons: btnInfo,
+                                    wrapperHTML: searchRoot.outerHTML.substring(0, 300)
+                                };
+                            }
+                        }
+                        return {success: false, message: 'Target card with WhatsApp not found'};
+                        """
+
+                        menu_res = driver.execute_script(js_scroll_and_click_menu) or {}
+                        logger.info(f"Menu action result: {menu_res}")
+                        if not menu_res.get('success'):
+                            logger.warning(f"Could not open menu for post. Details: {menu_res}")
+                            try:
+                                driver.save_screenshot(str(SCREENSHOT_DIR / f"{store_code}_menu_not_found.png"))
+                            except:
+                                pass
+                            continue
+
+                        time.sleep(0.8)
+
+                        js_click_delete = """
+                        let menuItems = document.querySelectorAll('[role="menuitem"], li, button, a, div[role="option"]');
+                        for (let item of menuItems) {
+                            let txt = (item.innerText || item.textContent || '').trim().toLowerCase();
+                            if (txt === 'delete' || txt === 'hapus' || txt.includes('delete') || txt.includes('hapus')) {
+                                item.click();
+                                return {success: true, actionText: txt};
+                            }
+                        }
+                        return {success: false};
+                        """
+                        del_res = driver.execute_script(js_click_delete) or {}
+                        logger.info(f"Delete option click result: {del_res}")
+                        if not del_res.get('success'):
+                            logger.warning("Delete menu option not found. Closing menu and skipping.")
+                            try:
+                                driver.find_element(By.TAG_NAME, 'body').click()
+                            except:
+                                pass
+                            time.sleep(0.5)
+                            continue
+
+                        time.sleep(0.8)
+
+                        js_confirm_deletion = """
+                        let buttons = document.querySelectorAll('button, [role="button"]');
+                        for (let btn of buttons) {
+                            let txt = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+                            let aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                            if (txt === 'delete' || txt === 'hapus' || txt === 'confirm' || txt === 'ya' || txt === 'ok' ||
+                                aria.includes('delete') || aria.includes('hapus') || aria.includes('confirm')) {
+                                if (!txt.includes('cancel') && !txt.includes('batal') && !aria.includes('cancel')) {
+                                    btn.click();
+                                    return {success: true, btnText: txt || aria};
+                                }
+                            }
+                        }
+                        return {success: false, message: 'No confirmation dialog or button needed'};
+                        """
+                        conf_res = driver.execute_script(js_confirm_deletion) or {}
+                        logger.info(f"Confirmation result: {conf_res}")
+
+                        time.sleep(1.5)
+                        profile_deleted_count += 1
+                        total_deleted += 1
+                        logger.info("Successfully deleted WhatsApp post and verified.")
+
+                    except Exception as e:
+                        logger.error(f"Error deleting post: {e}")
+
+                if profile_deleted_count > 0 or len(whatsapp_posts) > 0:
+                    profile_ok += 1
+                else:
                     profile_failed += 1
 
-                # Close and return to search for next profile
-                logger.info("Going back to search results for next profile...")
                 driver.get(GMB_URL)
                 time.sleep(0.6)
-
-                # Re-search store code
-                search_field = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//input[@role='combobox']"))
-                )
-                search_field.clear()
-                search_field.send_keys(store_code)
-                time.sleep(0.1)
-                search_field.send_keys(Keys.ENTER)
-                logger.info("Re-searched store code")
-                time.sleep(1.0)
 
             except Exception as e:
                 logger.error(f"Profile {profile_idx + 1} error: {e}")
                 profile_failed += 1
                 try:
-                    if new_windows:
-                        driver.close()
-                        time.sleep(0.1)
-                        driver.switch_to.window(windows_before[0])
+                    driver.get(GMB_URL)
+                    time.sleep(0.6)
                 except:
                     pass
 
-        # Summary
-        logger.info(f"\n=== Delete Summary ===")
-        logger.info(f"Profiles processed: {profile_ok}, Failed: {profile_failed}")
-
-        if profile_ok > 0:
-            update_status(store_code, "SUCCESS" if profile_failed == 0 else "PARTIAL", f"{profile_ok} OK, {profile_failed} failed")
+        if DRY_RUN:
+            if dry_run_matches > 0:
+                update_delete_status(store_code, "DRY_RUN_READY", f"Found {dry_run_matches} WhatsApp posts (Dry Run)")
+            else:
+                update_delete_status(store_code, "NO_MATCHES", "No WhatsApp posts found")
         else:
-            update_status(store_code, "FAILED", f"All {profile_failed} profiles failed")
+            if total_deleted > 0:
+                status_val = "SUCCESS" if profile_failed == 0 else "PARTIAL"
+                update_delete_status(store_code, status_val, f"Deleted {total_deleted} posts across profiles")
+            elif total_whatsapp_found == 0:
+                update_delete_status(store_code, "NO_MATCHES", "No WhatsApp posts found")
+            else:
+                update_delete_status(store_code, "FAILED", f"Found {total_whatsapp_found} WhatsApp posts but failed to delete")
 
     except Exception as e:
-        logger.error(f"Delete posts failed: {e}")
-        update_status(store_code, "FAILED", str(e))
+        logger.error(f"Delete posts failed for {store_code}: {e}")
+        update_delete_status(store_code, "FAILED", str(e))
 
 
 def main():
     logger.info("=== GMB Automation Start ===")
     logger.info(f"DRY_RUN: {DRY_RUN}, MAX_STORES: {MAX_STORES}")
 
-    # Menu pilihan mode
     print("\n" + "="*50)
     print("GMB AUTOMATION - PILIH MODE")
     print("="*50)
@@ -1423,47 +1458,59 @@ def main():
 
     try:
         validate_config()
-        init_status_csv()
+        if mode == "add_post":
+            init_status_csv()
+        else:
+            init_delete_status_csv()
 
         driver = create_driver()
 
-        # Step 1: Login to Google (before accessing GMB)
         if not login_to_google(driver):
             logger.error("Login failed")
             driver.quit()
             sys.exit(1)
 
         stores = load_stores()
-        status_map = load_status()
 
-        pending = [s for s in stores if status_map.get(s["code"]) not in ["SUCCESS", "FAILED", "PROCESSING"]]
+        if mode == "add_post":
+            status_map = load_status()
+            pending = [s for s in stores if status_map.get(s["code"]) not in ["SUCCESS", "FAILED", "PROCESSING"]]
+        else:
+            delete_status_map = load_delete_status()
+            pending = [s for s in stores if delete_status_map.get(s["code"]) not in ["SUCCESS", "FAILED", "PROCESSING"]]
+
         if not pending:
             logger.info("No pending stores")
             driver.quit()
             return
 
-        logger.info(f"Processing {len(pending)} pending stores")
+        logger.info(f"Processing {len(pending)} pending stores for {mode}")
         max_process = min(MAX_STORES, len(pending)) if MAX_STORES > 0 else len(pending)
 
-        # Jalankan mode yang dipilih
         if mode == "add_post":
             for store in pending[:max_process]:
                 try:
                     process_store(driver, store["code"], store["wa_link"])
                 except Exception as e:
                     logger.error(f"Error: {e}")
-        else:  # delete_post
+        else:
             for store in pending[:max_process]:
                 try:
                     delete_posts(driver, store["code"])
                 except Exception as e:
                     logger.error(f"Error: {e}")
 
-        # Summary
-        final_status = load_status()
-        success_stores = [code for code, status in final_status.items() if status == "SUCCESS"]
-        failed_stores = [code for code, status in final_status.items() if status == "FAILED"]
-        dryrun_stores = [code for code, status in final_status.items() if status == "DRY_RUN_OK"]
+        if mode == "add_post":
+            final_status = load_status()
+            success_stores = [code for code, status in final_status.items() if status == "SUCCESS"]
+            failed_stores = [code for code, status in final_status.items() if status == "FAILED"]
+            dryrun_stores = [code for code, status in final_status.items() if status == "DRY_RUN_OK"]
+        else:
+            final_status = load_delete_status()
+            success_stores = [code for code, status in final_status.items() if status == "SUCCESS"]
+            failed_stores = [code for code, status in final_status.items() if status == "FAILED"]
+            dryrun_stores = [code for code, status in final_status.items() if status == "DRY_RUN_READY"]
+
         total = len(final_status)
 
         logger.info("=" * 70)
@@ -1482,8 +1529,7 @@ def main():
             logger.info(f"[DRY_RUN] ({len(dryrun_stores)}): {', '.join(dryrun_stores)}")
 
         logger.info("=" * 70)
-
-        logger.info("=== GMB Automation End ===")
+        logger.info("=== GMB Automation End =='")
         driver.quit()
 
     except Exception as e:
