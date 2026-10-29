@@ -56,7 +56,8 @@ def get_cta_candidates(cta: str):
     # Return map candidates PLUS the CTA itself for exact match
     return CTA_MAP.get(cta, [cta]) + [cta]
 
-STORES_FILE = Path("stores.txt")
+STORE_CODES_FILE = Path("store_codes.txt")
+WA_LINKS_FILE = Path("wa_links.txt")
 STATUS_FILE = Path("status.csv")
 DELETE_STATUS_FILE = Path("delete_status.csv")
 LOG_DIR = Path("logs")
@@ -82,8 +83,10 @@ def validate_config():
         raise ValueError("PHOTO not set")
     if not WA_LINK:
         raise ValueError("WA_LINK not set")
-    if not STORES_FILE.exists():
-        raise FileNotFoundError(f"stores.txt not found")
+    if not STORE_CODES_FILE.exists():
+        raise FileNotFoundError(f"store_codes.txt not found")
+    if not WA_LINKS_FILE.exists():
+        raise FileNotFoundError(f"wa_links.txt not found")
 
     photo_path = Path(PHOTO)
     if not photo_path.is_absolute():
@@ -96,20 +99,27 @@ def validate_config():
 
 def load_stores():
     stores = []
-    with open(STORES_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("|")
-            # Format: STORE_CODE|WA_LINK
-            if len(parts) == 2:
-                store_code, wa_link = parts[0].strip(), parts[1].strip()
-                if store_code and wa_link:
-                    stores.append({"code": store_code, "wa_link": wa_link})
-            else:
-                logger.warning(f"Invalid line (need 2 columns STORE_CODE|WA_LINK): {line}")
-    logger.info(f"Loaded {len(stores)} stores")
+    codes = []
+    links = []
+
+    if STORE_CODES_FILE.exists():
+        with open(STORE_CODES_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                code = line.strip()
+                if code and not code.startswith("#"):
+                    codes.append(code)
+
+    if WA_LINKS_FILE.exists():
+        with open(WA_LINKS_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                link = line.strip()
+                if link and not link.startswith("#"):
+                    links.append(link)
+
+    for code, link in zip(codes, links):
+        stores.append({"code": code, "wa_link": link})
+
+    logger.info(f"Loaded {len(stores)} stores from store_codes.txt and wa_links.txt")
     return stores
 
 
@@ -878,6 +888,9 @@ def process_store(driver, store_code: str, wa_link: str):
     import time
 
     try:
+        print(f"\n" + "┌" + "─" * 70 + "┐")
+        print(f"│ 🔍 PROCESSING STORE: {store_code:<48} │")
+        print(f"└" + "─" * 70 + "┘")
         logger.info(f"Processing: {store_code}")
         update_status(store_code, "PROCESSING")
 
@@ -1019,9 +1032,11 @@ def process_store(driver, store_code: str, wa_link: str):
                 # Fill form and publish for this profile
                 if fill_form_and_publish(driver, f"Profile {profile_idx}", wa_link):
                     success_count += 1
+                    print(f"  ✨ [SUCCESS] Profile {profile_idx}/{len(add_post_buttons)} posted successfully!")
                     logger.info(f"Profile {profile_idx} posted successfully")
                 else:
                     failed_count += 1
+                    print(f"  ❌ [FAILED] Profile {profile_idx}/{len(add_post_buttons)} post failed.")
                     logger.warning(f"Profile {profile_idx} post failed")
 
                 # After posting, go back to search results to find next profile
@@ -1076,6 +1091,9 @@ def delete_posts(driver, store_code: str):
     import re
 
     try:
+        print(f"\n" + "┌" + "─" * 70 + "┐")
+        print(f"│ 🗑️  DELETE MODE - STORE: {store_code:<45} │")
+        print(f"└" + "─" * 70 + "┘")
         logger.info(f"Processing delete for store: {store_code} (DRY_RUN={DRY_RUN})")
         update_delete_status(store_code, "PROCESSING")
 
@@ -1436,23 +1454,39 @@ def delete_posts(driver, store_code: str):
         update_delete_status(store_code, "FAILED", str(e))
 
 
+def print_banner():
+    banner = r"""
+   ██████╗ ███╗   ███╗██████╗      █████╗ ██╗   ██╗███╗   ███╗██████╗ ███████╗███╗   ██╗████████╗██╗ ██████╗ ███╗   ██╗
+  ██╔════╝ ████╗ ████║██╔══██╗    ██╔══██╗██║   ██║████╗ ████║██╔══██╗██╔════╝████╗  ██║╚══██╔══╝██║██╔═══██╗████╗  ██║
+  ██║  ███╗██╔████╔██║██████╔╝    ███████║██║   ██║██╔████╔██║██║  ██║█████╗  ██╔██╗ ██║   ██║   ██║██║   ██║██╔██╗ ██║
+  ██║   ██║██║╚█▀╝██║██╔══██╗    ██╔══██║██║   ██║██║╚█▀╝██║██║  ██║██╔══╝  ██║╚██╗██║   ██║   ██║██║   ██║██║╚█▀╝██║
+  ╚██████╔╝██║     ██║██████╔╝    ██║  ██║╚██████╔╝██║     ██║██████╔╝███████╗██║ ╚████║   ██║   ██║╚██████╔╝██║     ██║
+   ╚═════╝ ╚═╝     ╚═╝╚═════╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝     ╚═╝
+    """
+    print(banner)
+    print("=" * 115)
+    print(" 🚀 Google Business Profile (GMB) Automation Tool | Multi-Store Poster & Cleaner 🚀 ".center(115))
+    print("=" * 115)
+
+
 def main():
+    print_banner()
     logger.info("=== GMB Automation Start ===")
     logger.info(f"DRY_RUN: {DRY_RUN}, MAX_STORES: {MAX_STORES}")
 
-    print("\n" + "="*50)
-    print("GMB AUTOMATION - PILIH MODE")
-    print("="*50)
-    print("1. Add Post (Buat postingan baru)")
-    print("2. Delete Post (Hapus postingan)")
-    print("="*50)
+    print("\n" + "╔" + "═" * 48 + "╗")
+    print("║" + " GMB AUTOMATION - PILIH MODE ".center(48) + "║")
+    print("╠" + "═" * 48 + "╣")
+    print("║  [1] 📝 Add Post (Buat postingan baru)            ║")
+    print("║  [2] 🗑️  Delete Post (Hapus postingan WhatsApp)     ║")
+    print("╚" + "═" * 48 + "╝")
 
     while True:
-        choice = input("Pilih mode (1 atau 2): ").strip()
+        choice = input("\nPilih mode (1 atau 2): ").strip()
         if choice in ["1", "2"]:
             mode = "add_post" if choice == "1" else "delete_post"
             break
-        print("Input tidak valid. Masukkan 1 atau 2")
+        print("❌ Input tidak valid. Masukkan 1 atau 2")
 
     logger.info(f"Mode dipilih: {mode}")
 
@@ -1513,11 +1547,18 @@ def main():
 
         total = len(final_status)
 
-        logger.info("=" * 70)
-        logger.info("SUMMARY")
-        logger.info("=" * 70)
-        logger.info(f"Total Stores: {total}")
-        logger.info("-" * 70)
+        summary_box = f"""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                EXECUTION SUMMARY                          ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║  📊 Total Stores Processed : {total:<43}║
+║  ✅ Successful             : {len(success_stores):<43}║
+║  ❌ Failed                 : {len(failed_stores):<43}║
+║  🔍 Dry Run Ready          : {len(dryrun_stores):<43}║
+╚═══════════════════════════════════════════════════════════════════════════╝
+        """
+        print(summary_box)
+        logger.info(summary_box)
 
         if success_stores:
             logger.info(f"[SUCCESS] ({len(success_stores)}): {', '.join(success_stores)}")
@@ -1529,7 +1570,7 @@ def main():
             logger.info(f"[DRY_RUN] ({len(dryrun_stores)}): {', '.join(dryrun_stores)}")
 
         logger.info("=" * 70)
-        logger.info("=== GMB Automation End =='")
+        logger.info("=== GMB Automation End ===")
         driver.quit()
 
     except Exception as e:
